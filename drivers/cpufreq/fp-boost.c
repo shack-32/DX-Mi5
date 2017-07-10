@@ -36,7 +36,7 @@
 #define FINGERPRINT_BOOST           (1U << 1)
 
 /* Fingerprint sensor input key */
-#define FINGERPRINT_KEY 0x2ee
+#define FINGERPRINT_KEY 0x60
 
 /* The duration in milliseconds for the fingerprint boost */
 #define FP_BOOST_MS (3000)
@@ -156,7 +156,7 @@ static void cpu_fp_input_event(struct input_handle *handle, unsigned int type,
 
 	/* Delaying work to ensure all CPUs are online */
 	queue_delayed_work(b->wq, &fp->boost_work,
-				msecs_to_jiffies(20));
+				msecs_to_jiffies(30));
 }
 
 static int cpu_fp_input_connect(struct input_handler *handler,
@@ -210,7 +210,7 @@ static struct input_handler cpu_fp_input_handler = {
 	.event      = cpu_fp_input_event,
 	.connect    = cpu_fp_input_connect,
 	.disconnect = cpu_fp_input_disconnect,
-	.name       = "cpu_fp_handler",
+	.name       = "fpc1020",
 	.id_table   = cpu_fp_ids,
 };
 
@@ -379,7 +379,7 @@ static int __init cpu_fp_init(void)
 		goto input_unregister;
 
 	cpufreq_register_notifier(&do_cpu_boost_nb, CPUFREQ_POLICY_NOTIFIER);
-
+	set_boost_bit(b, DRIVER_ENABLED);
 	return 0;
 
 input_unregister:

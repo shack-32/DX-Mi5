@@ -28,7 +28,6 @@
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
 #include <asm/cacheflush.h>
-#include <linux/kthread.h>
 
 /* The number of memstore arrays limits the number of contexts allowed.
  * If more contexts are needed, update multiple for MEMSTORE_SIZE
