@@ -2831,23 +2831,6 @@ static inline int propagate_entity_load_avg(struct sched_entity *se)
 static inline void set_tg_cfs_propagate(struct cfs_rq *cfs_rq) {}
 #endif
 
-/*
- * Unsigned subtract and clamp on underflow.
- *
- * Explicitly do a load-store to ensure the intermediate value never hits
- * memory. This allows lockless observations without ever seeing the negative
- * values.
- */
-#define sub_positive(_ptr, _val) do {				\
-	typeof(_ptr) ptr = (_ptr);				\
-	typeof(*ptr) val = (_val);				\
-	typeof(*ptr) res, var = READ_ONCE(*ptr);		\
-	res = var - val;					\
-	if (res > var)						\
-		res = 0;					\
-	WRITE_ONCE(*ptr, res);					\
-} while (0)
-
 /**
  * update_cfs_rq_load_avg - update the cfs_rq's load/util averages
  * @now: current time, as per cfs_rq_clock_task()
@@ -2903,6 +2886,50 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq, bool update_freq)
 
 	return decayed || removed;
 }
+int
+__update_load_avg_blocked_rt_se(u64 now, int cpu, struct sched_rt_entity *rt_se)
+{
+	int ret;
+
+	ret = __update_load_avg(now, cpu, &rt_se->avg, 0, 0, NULL);
+	trace_printk("sched_load_rt_se: pid=%d util=%lu",
+		     task_pid_nr(rt_task_of(rt_se)),
+		     rt_se->avg.util_avg);
+
+	return ret;
+}
+
+void update_load_avg_rt_se(u64 now, int cpu, struct sched_rt_entity *rt_se, int running)
+{
+	__update_load_avg(now, cpu, &rt_se->avg, 0, running, NULL);
+	trace_printk("sched_load_rt_se: pid=%d util=%lu",
+		     task_pid_nr(rt_task_of(rt_se)),
+		     rt_se->avg.util_avg);
+}
+
+int update_rt_rq_load_avg(u64 now, int cpu, struct rt_rq *rt_rq, int running)
+{
+	int ret;
+	struct sched_avg *sa = &rt_rq->avg;
+
+	if (atomic_long_read(&rt_rq->removed_util_avg)) {
+		long r = atomic_long_xchg(&rt_rq->removed_util_avg, 0);
+		sub_positive(&sa->util_avg, r);
+		sub_positive(&sa->util_sum, r * LOAD_AVG_MAX);
+	}
+
+	ret = __update_load_avg(now, cpu, sa, 0, running, NULL);
+
+#ifndef CONFIG_64BIT
+	smp_wmb();
+	rt_rq->load_last_update_time_copy = sa->last_update_time;
+#endif
+
+	trace_printk("sched_load_rt_rq: cpu=%d util=%lu", cpu, rt_rq->avg.util_avg);
+
+	return ret;
+}
+
 /*
  * Optional action to be done while updating the load average
  */
@@ -3029,7 +3056,7 @@ static inline u64 cfs_rq_last_update_time(struct cfs_rq *cfs_rq)
  * Synchronize entity load avg of dequeued entity without locking
  * the previous rq.
  */
-void sync_entity_load_avg(struct sched_entity *se)
+static void sync_entity_load_avg(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 	u64 last_update_time;
@@ -3042,7 +3069,7 @@ void sync_entity_load_avg(struct sched_entity *se)
  * Task first catches up with cfs_rq, and then subtract
  * itself from the cfs_rq (task must be off the queue now).
  */
-void remove_entity_load_avg(struct sched_entity *se)
+static void remove_entity_load_avg(struct sched_entity *se)
 {
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
@@ -7223,6 +7250,10 @@ static void update_blocked_averages(int cpu)
 		if (cfs_rq->tg->se[cpu])
 			update_load_avg(cfs_rq->tg->se[cpu], 0);
 	}
+
+	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
+
+
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -7282,6 +7313,7 @@ static inline void update_blocked_averages(int cpu)
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
+	update_rt_rq_load_avg(rq_clock_task(rq), cpu, &rq->rt, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -9578,6 +9610,16 @@ static void attach_task_cfs_rq(struct task_struct *p)
 		se->vruntime += cfs_rq->min_vruntime;
 }
 
+#ifdef CONFIG_SMP
+void copy_sched_avg(struct sched_avg *from, struct sched_avg *to)
+{
+	to->last_update_time = from->last_update_time;
+	to->util_avg = from->util_avg;
+}
+#else
+void copy_sched_avg(struct sched_avg *from, struct sched_avg *to) { }
+#endif
+
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
 {
 	detach_task_cfs_rq(p);
@@ -9585,6 +9627,7 @@ static void switched_from_fair(struct rq *rq, struct task_struct *p)
 
 static void switched_to_fair(struct rq *rq, struct task_struct *p)
 {
+	copy_sched_avg(&p->rt.avg, &p->se.avg);
 	attach_task_cfs_rq(p);
 
 	if (task_on_rq_queued(p)) {
