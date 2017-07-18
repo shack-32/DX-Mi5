@@ -202,7 +202,7 @@ static void update_fdomain_capacity_request(int cpu)
 	}
 
 	/* Convert the new maximum capacity request into a cpu frequency */
-	freq_new = capacity * policy->max >> SCHED_CAPACITY_SHIFT;
+	freq_new = capacity * policy->cpuinfo.max_freq >> SCHED_CAPACITY_SHIFT;
 	if (cpufreq_frequency_table_target(policy, policy->freq_table,
 					   freq_new, CPUFREQ_RELATION_L,
 					   &index_new))
@@ -245,23 +245,7 @@ void update_cpu_capacity_request(int cpu, bool request)
 
 	scr = &per_cpu(cpu_sched_capacity_reqs, cpu);
 
-#ifdef CONFIG_SCHED_WALT
-	if (!walt_disabled && sysctl_sched_use_walt_cpu_util) {
-		/*
-		 * Same WALT signal is set at different places, take the max
-		 * reported utilization
-		 */
-		new_capacity = max(scr->cfs, scr->rt);
-		new_capacity = max(new_capacity, scr->dl);
-	} else {
-		/*
-		 * For PELT, utilization is aggregated
-		 */
-		new_capacity = scr->cfs + scr->rt + scr->dl;
-	}
-#else
 	new_capacity = scr->cfs + scr->rt;
-#endif
 	new_capacity = new_capacity * capacity_margin
 		/ SCHED_CAPACITY_SCALE;
 	new_capacity += scr->dl;
